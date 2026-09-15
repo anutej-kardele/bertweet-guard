@@ -1,0 +1,32 @@
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Environment configurations & secrets
+.env
+.env.local
+
+# Model weights, artifacts, and checkpoints
+*.safetensors
+*.bin
+*.pt
+*.pth
+artifacts/
+outputs/
+data/
+*.zip
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# IDE configurations
+.idea/
+.vscode/

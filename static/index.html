@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BERTweet-Guard Demo</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+
+<body
+    class="bg-slate-950 text-slate-100 min-h-screen flex flex-col items-center justify-center p-4 selection:bg-indigo-500 selection:text-white">
+
+    <main class="w-full max-w-xl bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl space-y-6">
+        <!-- Header -->
+        <header class="border-b border-slate-800 pb-4">
+            <div class="flex items-center justify-between">
+                <h1 class="text-xl font-bold tracking-tight text-white flex items-center gap-2">
+                    <span>🛡️</span> BERTweet-Guard
+                </h1>
+                <span class="text-xs font-mono bg-slate-800 text-slate-400 px-2 py-1 rounded">vinai/bertweet-base +
+                    LoRA</span>
+            </div>
+            <p class="text-xs text-slate-400 mt-1">Real-time hate speech and offensive content detection microservice.
+            </p>
+        </header>
+
+        <!-- Input Form -->
+        <form id="moderation-form" class="space-y-4">
+            <div>
+                <label for="post-text"
+                    class="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">Input
+                    Content</label>
+                <textarea id="post-text" rows="3" required
+                    placeholder="Type or paste sample text here (supports @mentions, URLs, #hashtags, and emojis)..."
+                    class="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all resize-none"></textarea>
+            </div>
+            <button type="submit"
+                class="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-medium py-2.5 rounded-xl transition-colors">
+                Analyze Content
+            </button>
+        </form>
+
+        <!-- Results Display -->
+        <div id="results-container" class="hidden space-y-4 border-t border-slate-800 pt-4 mt-4">
+            <div class="flex justify-between items-end">
+                <h3 class="text-sm font-semibold text-slate-400 uppercase tracking-wider">Classification</h3>
+                <span id="final-verdict"
+                    class="text-sm font-bold px-3 py-1 rounded-full bg-slate-800 text-slate-300">Awaiting...</span>
+            </div>
+            <div class="space-y-3">
+                <!-- Normal Bar -->
+                <div>
+                    <div class="flex justify-between text-xs mb-1"><span class="text-slate-300">Normal</span><span
+                            id="score-normal" class="text-slate-400">0.0%</span></div>
+                    <div class="h-2 w-full bg-slate-800 rounded-full overflow-hidden">
+                        <div id="bar-normal" class="h-full bg-emerald-500 w-0 transition-all duration-500"></div>
+                    </div>
+                </div>
+                <!-- Flagged Bar -->
+                <div>
+                    <div class="flex justify-between text-xs mb-1"><span class="text-slate-300">Flagged
+                            (Toxic/Threat/Hate)</span><span id="score-flagged" class="text-slate-400">0.0%</span></div>
+                    <div class="h-2 w-full bg-slate-800 rounded-full overflow-hidden">
+                        <div id="bar-flagged" class="h-full bg-rose-500 w-0 transition-all duration-500"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        document.getElementById('moderation-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const text = document.getElementById('post-text').value;
+            const btn = e.target.querySelector('button');
+
+            btn.disabled = true;
+            btn.innerText = 'Analyzing...';
+
+            try {
+                const response = await fetch('/api/v1/predict', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text })
+                });
+
+                const data = await response.json();
+
+                document.getElementById('results-container').classList.remove('hidden');
+
+                const formatPercent = (val) => (val * 100).toFixed(1) + '%';
+
+                // Update bars
+                document.getElementById('score-normal').innerText = formatPercent(data.scores.normal);
+                document.getElementById('bar-normal').style.width = formatPercent(data.scores.normal);
+
+                document.getElementById('score-flagged').innerText = formatPercent(data.scores.flagged);
+                document.getElementById('bar-flagged').style.width = formatPercent(data.scores.flagged);
+
+                // Update Verdict Pill
+                const verdictEl = document.getElementById('final-verdict');
+                if (data.flagged) {
+                    verdictEl.className = 'text-sm font-bold px-3 py-1 rounded-full bg-rose-500/20 text-rose-400 border border-rose-500/30';
+                    verdictEl.innerText = 'FLAGGED';
+                } else {
+                    verdictEl.className = 'text-sm font-bold px-3 py-1 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30';
+                    verdictEl.innerText = 'NORMAL';
+                }
+            } catch (err) {
+                alert('Error communicating with the API. Check the backend logs.');
+            } finally {
+                btn.disabled = false;
+                btn.innerText = 'Analyze Content';
+            }
+        });
+    </script>
+</body>
+
+</html>
