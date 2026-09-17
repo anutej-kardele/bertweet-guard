@@ -1,7 +1,6 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.model import ModerationClassifier
 from app.schemas import ModerationRequest, ModerationResponse, ClassScores
@@ -25,7 +24,25 @@ app = FastAPI(
     debug=is_dev
 )
 
-# 2. Add a Health Check Endpoint (Crucial for Cloud Run Startup Probes)
+# 2. Add CORS Middleware to allow external frontends
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all domains to test the frontend anywhere
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 3. Root Endpoint (API Status)
+@app.get("/")
+async def root():
+    return {
+        "message": "BERTweet-Guard API is running",
+        "docs_url": "/docs",
+        "health_url": "/health"
+    }
+
+# 4. Health Check Endpoint (Crucial for Cloud Run Startup Probes)
 @app.get("/health")
 async def health_check():
     return {
@@ -34,14 +51,6 @@ async def health_check():
         "model": settings.model_id,
         "threshold": settings.decision_threshold
     }
-
-# 3. Mount the static directory to serve UI assets
-app.mount("/static", StaticFiles(directory="static"), name="static")
-
-# 4. Serve the single-page frontend on the root URL
-@app.get("/")
-async def serve_frontend():
-    return FileResponse("static/index.html")
 
 # 5. The main inference endpoint
 @app.post("/api/v1/predict", response_model=ModerationResponse)
