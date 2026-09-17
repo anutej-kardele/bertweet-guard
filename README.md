@@ -1,42 +1,60 @@
-# OpenStream Moderation — BERTweet + LoRA
+# BERTweet Guard — BERTweet + LoRA Text Moderation
 
-A research-to-deployment text moderation project built around **BERTweet**, **LoRA**, **Focal Loss**, and **validation-tuned decision thresholds**.
+An end-to-end AI model development project for fine-tuning **BERTweet** with **LoRA**, **Weighted Focal Loss**, cosine learning-rate scheduling, and validation-calibrated decision thresholds.
 
-The project was developed in two phases:
+The central focus of this repository is the **machine-learning work**: controlled experimentation, model comparison, large-dataset fine-tuning, evaluation, threshold optimization, and export of a reusable moderation model. The FastAPI service, Docker image, CI/CD pipeline, and Cloud Run deployment complete the project by making the trained model usable outside a notebook.
 
-1. **Experiment broadly on a smaller dataset (THOS)** to compare architectures, LoRA configurations, loss functions, schedulers, and fine-tuning strategies.
-2. **Scale the best-performing approach to the much larger Jigsaw Toxic Comment dataset**, then refine preprocessing, class weighting, checkpoint selection, and the deployment threshold.
+> **Live application:** [bertweet.anutej.us](http://bertweet.anutej.us/)  
+> **Frontend repository:** [bertweet-guard-ui](https://github.com/anutej-kardele/bertweet-guard-ui)  
+> **Model repository:** [`anutej9/bertweet-guard`](https://huggingface.co/anutej9/bertweet-guard)
 
-The repository now includes both the **research notebooks** and a **production-style FastAPI inference service** with a small browser UI.
-
-> **Current deployment task:** binary moderation — `normal` vs `flagged`  
-> **Primary model-selection metric:** Macro F1  
-> **Current backbone:** `vinai/bertweet-base`
+| Project area | Current choice |
+| --- | --- |
+| Backbone | `vinai/bertweet-base` |
+| Fine-tuning method | LoRA |
+| Training loss | Weighted Focal Loss |
+| Primary selection metric | Macro F1 |
+| Production task | Binary moderation: `normal` vs. `flagged` |
+| Deployed decision threshold | `0.6760` |
+| Inference service | FastAPI on Google Cloud Run |
 
 ---
 
-## 1. Project Evolution
+## 1. Project Motivation
+
+Content moderation is not only a deployment problem. The main challenge is finding a model and training configuration that can identify harmful text without incorrectly flagging too much benign discussion.
+
+This project was developed in two research phases:
+
+1. **Experiment broadly on the smaller THOS dataset** to compare model families, fine-tuning strategies, LoRA configurations, loss functions, schedulers, and training choices.
+2. **Scale the strongest approach to the much larger Jigsaw Toxic Comment dataset**, then refine preprocessing, class weighting, checkpoint selection, evaluation, and the decision threshold used during inference.
+
+The resulting model is exposed through an API and a separate browser interface, but those deployment components support the primary objective: producing a practical, customizable text-moderation model.
+
+---
+
+## 2. Research Journey
 
 ### Phase 1 — THOS experimentation
 
-> **Public repository note:** The THOS work was completed as part of a university project. The original THOS notebook and university-project implementation are **not included in this repository**. Only a high-level summary of the experimentation and conclusions is documented here.
+> **Public repository note:** The THOS work was completed as part of a university project. The original THOS notebook and university-project implementation are not included in this public repository. Only a high-level summary of the experiments, results, and conclusions is documented here.
 
-The first stage used the **THOS dataset** as a smaller, faster experimentation environment.
+THOS provided a smaller and faster environment for comparing ideas before committing compute to a much larger dataset.
 
-The THOS task was three-class classification:
+The THOS task used three classes:
 
 - `normal`
 - `offensive`
 - `hate`
 
-The goal was not to commit to one model immediately. Instead, many combinations were tested to determine which ideas consistently worked best before moving to a much larger dataset.
+The goal was not to choose BERTweet in advance. Multiple approaches were tested to identify which decisions consistently improved minority-class performance and overall Macro F1.
 
 Experiments included:
 
 - Zero-shot BERT
 - Full BERT fine-tuning
 - LoRA fine-tuning
-- LoRA rank experiments (`r=8`, `r=16`, `r=32`)
+- LoRA rank experiments using `r=8`, `r=16`, and `r=32`
 - Focal Loss
 - Focal Loss gamma experiments
 - BERTweet
@@ -49,12 +67,14 @@ Experiments included:
 - Attention visualization
 - Fairness analysis
 
-The strongest THOS result was:
+### Strongest THOS result
 
-**BERTweet + LoRA r=16 + Focal Loss (γ=1) + Cosine Scheduler**
+The best-performing THOS configuration was:
+
+**BERTweet + LoRA `r=16` + Focal Loss (`γ=1`) + Cosine Scheduler**
 
 | Metric | Score |
-|---|---:|
+| --- | ---: |
 | Test Macro F1 | **0.6848** |
 | Best Validation F1 | 0.6741 |
 | Normal F1 | 0.8125 |
@@ -64,10 +84,10 @@ The strongest THOS result was:
 ![THOS model comparison](docs/thos_model_comparison.png)
 
 <details>
-<summary><strong>THOS experiment comparison</strong></summary>
+<summary><strong>Full THOS experiment comparison</strong></summary>
 
 | Model | Test Macro F1 | Best Val F1 | Normal F1 | Offensive F1 | Hate F1 |
-|---|---:|---:|---:|---:|---:|
+| --- | ---: | ---: | ---: | ---: | ---: |
 | **BERTweet LoRA r=16 + Focal(γ=1) + Cosine** | **0.6848** | 0.6741 | 0.8125 | 0.5895 | 0.6523 |
 | LoRA r=16 broad | 0.6810 | 0.6282 | 0.7951 | 0.5801 | 0.6680 |
 | BERTweet Full | 0.6714 | 0.6565 | 0.7855 | 0.5508 | 0.6781 |
@@ -86,7 +106,7 @@ The strongest THOS result was:
 
 </details>
 
-The THOS experiments showed that the best overall direction was:
+The experiments pointed to a clear modeling direction:
 
 ```text
 BERTweet
@@ -98,15 +118,39 @@ Focal Loss
 Cosine learning-rate scheduling
 ```
 
-That combination became the starting point for the larger-data phase.
+This combination became the starting point for the larger-data phase. The later Jigsaw work refined the configuration rather than restarting the search from scratch.
 
 ---
 
-## 2. Scaling to Jigsaw
+## 3. Why These Modeling Choices?
 
-After identifying the strongest strategy on THOS, the project moved to the much larger **Jigsaw Toxic Comment Classification** dataset.
+### BERTweet
 
-The Jigsaw labels are collapsed into a binary moderation target:
+BERTweet is a transformer model pretrained on English tweets. Its pretraining domain makes it a natural candidate for short, informal, user-generated text containing unconventional punctuation, abbreviations, mentions, and other social-media patterns.
+
+### LoRA
+
+Low-Rank Adaptation adds trainable low-rank matrices to selected transformer modules while leaving most pretrained parameters frozen. This makes experimentation more memory-efficient than full-model fine-tuning and allows different adaptation configurations to be compared without training every model parameter.
+
+### Weighted Focal Loss
+
+Moderation data is imbalanced: benign examples are usually more common than harmful examples. Weighted Focal Loss combines class weighting with extra attention to difficult examples, helping the training objective focus less on already-easy majority-class predictions.
+
+### Cosine scheduling with warmup
+
+Warmup reduces instability during the first training steps, while cosine decay gradually lowers the learning rate later in training. This combination performed well during the THOS comparison and was carried into the Jigsaw phase.
+
+### Macro F1
+
+Accuracy can look strong even when a model performs poorly on the less frequent harmful class. Macro F1 assigns equal importance to each class's F1 score, making it a more useful primary metric for this project.
+
+---
+
+## 4. Scaling the Model to Jigsaw
+
+After identifying the strongest direction on THOS, the project moved to the much larger **Jigsaw Toxic Comment Classification** dataset.
+
+The Jigsaw source labels are collapsed into a binary moderation target:
 
 ```text
 normal  = 0
@@ -124,12 +168,14 @@ A comment is marked `flagged` when any of these source labels is positive:
 
 The larger dataset uses a **90 / 5 / 5 stratified train / validation / test split**.
 
-The Jigsaw phase refined the THOS-winning approach rather than restarting from scratch.
+- **Training split:** parameter optimization
+- **Validation split:** checkpoint selection and decision-threshold tuning
+- **Test split:** final evaluation only
 
 ### Current training configuration
 
 | Component | Value |
-|---|---|
+| --- | --- |
 | Backbone | `vinai/bertweet-base` |
 | Task | Binary sequence classification |
 | Labels | `normal`, `flagged` |
@@ -149,20 +195,20 @@ The Jigsaw phase refined the THOS-winning approach rather than restarting from s
 | Scheduler | Cosine with warmup |
 | Warmup ratio | 0.06 |
 | Random seed | 42 |
-| Main metric | Macro F1 |
+| Primary metric | Macro F1 |
 
-The current v4 notebook also aligns preprocessing more closely with BERTweet and selects checkpoints using **threshold-tuned validation Macro F1**.
+The v4 notebook aligns preprocessing more closely with BERTweet and selects checkpoints using **threshold-tuned validation Macro F1**.
 
 ---
 
-## 3. Final Modeling Pipeline
+## 5. End-to-End Modeling Pipeline
 
 ```text
 Jigsaw toxicity data
         ↓
 Binary normal / flagged labels
         ↓
-Minimal preprocessing
+Minimal BERTweet-aligned preprocessing
         ↓
 BERTweet tokenizer
         ↓
@@ -170,7 +216,7 @@ BERTweet + LoRA fine-tuning
         ↓
 Weighted Focal Loss
         ↓
-Cosine LR + warmup
+Cosine learning-rate schedule + warmup
         ↓
 Validation probability predictions
         ↓
@@ -180,334 +226,87 @@ Best checkpoint selection
         ↓
 Held-out test evaluation
         ↓
-Merge LoRA into BERTweet
+Merge LoRA adapters into BERTweet
         ↓
-Deploy model + optimized threshold
+Export model, tokenizer, and threshold
+        ↓
+Serve the trained artifact through FastAPI
 ```
 
-The important point is that this is not only a model-training pipeline. The **decision threshold is part of the trained artifact**.
+The decision threshold is treated as part of the trained deployment artifact, not as an unrelated API setting.
 
 ---
 
-## 4. Why the Decision Threshold Matters
+## 6. Decision-Threshold Optimization
 
-The service does not simply use:
+The service does not simply use the class with the largest logit:
 
 ```python
 prediction = logits.argmax()
 ```
 
-Instead, it uses the probability of the `flagged` class:
+Instead, it computes the probability of the `flagged` class and compares it with a threshold selected on validation data:
 
 ```python
 prediction = int(flagged_probability >= decision_threshold)
 ```
 
-The threshold is selected using the validation set and then saved with the model.
+The currently deployed threshold is:
 
-For example:
+```text
+0.6760
+```
+
+Example:
 
 ```text
 flagged probability = 0.5478
-threshold           = 0.6200
+threshold           = 0.6760
+margin              = -0.1282
 prediction          = NORMAL
 ```
 
-Even though the raw `flagged` probability is above 0.50, it is still below the operating threshold.
+Even though the flagged probability is above `0.50`, it remains below the validation-selected operating threshold.
 
-This is useful for reducing false positives without retraining the model every time the desired operating point changes.
+This separation is useful because it allows the model's decision boundary to be calibrated for the desired balance between false positives and false negatives without retraining the network. The API also returns the raw class probabilities so downstream systems can apply their own review policies.
 
 ---
 
-## 5. Latest Reported Large-Dataset Result
+## 7. Reported Results
 
-A recent pre-v4 run produced:
+### THOS result
 
 | Metric | Result |
-|---|---:|
-| Threshold-tuned Validation Macro F1 | **0.9185** |
+| --- | ---: |
+| Best test Macro F1 | **0.6848** |
+| Best validation F1 | 0.6741 |
+| Best configuration | BERTweet + LoRA `r=16` + Focal (`γ=1`) + Cosine |
+
+### Jigsaw pre-v4 benchmark
+
+A large-dataset run completed before the v4 preprocessing and checkpoint-selection changes produced:
+
+| Metric | Result |
+| --- | ---: |
+| Threshold-tuned validation Macro F1 | **0.9185** |
 | Test Macro F1 | **0.9174** |
-| Test Accuracy | **0.9710** |
+| Test accuracy | **0.9710** |
 | Selected threshold | **0.62** |
 | Flagged precision | 0.89 |
 | Flagged recall | 0.81 |
 | Flagged F1 | 0.85 |
 
-The v4 notebook modifies preprocessing alignment and checkpoint selection, so v4 results should be regenerated by running the notebook rather than copying the earlier metrics.
+These metrics are retained as a historical benchmark. The v4 workflow changes preprocessing alignment and checkpoint selection, so its results should be regenerated from the notebook rather than copied from the earlier run. The current deployment threshold of `0.6760` belongs to the newer exported artifact and should not be confused with the historical `0.62` benchmark threshold.
 
 ---
 
-# Project Structure
+## 8. Research Notebook
 
-```text
-openstream-moderation/
-├── app/
-│   ├── __init__.py
-│   ├── config.py          # Pydantic settings and environment parsing
-│   ├── main.py            # FastAPI application and lifespan model loading
-│   ├── model.py           # Hugging Face inference + threshold logic
-│   └── schemas.py         # Request / response validation models
-│
-├── static/
-│   └── index.html         # Interactive browser dashboard
-│
-├── notebooks/
-│   └── bertweet_moderation_model_v4_bertweet_aligned.ipynb
-│
-├── docs/
-│   └── thos_model_comparison.png
-│
-├── .env.example           # Environment-variable template
-├── .gitignore
-├── requirements.txt
-├── setup.sh               # Create environment and install dependencies
-├── launch.sh              # Launch API or research notebooks
-└── README.md
-```
+### `bertweet_moderation_model_v4_bertweet_aligned.ipynb`
 
-The structure deliberately separates:
+The current large-dataset training notebook includes:
 
-- **research/training** under `notebooks/`
-- **production inference** under `app/`
-- **browser testing UI** under `static/`
-
-The production model itself is hosted on Hugging Face and is downloaded automatically when the API starts.
-
-This follows the same deployment pattern used in the companion BERTweet Guard service.
-
----
-
-# Quickstart
-
-## Prerequisites
-
-- Python **3.10+**
-- Git
-- Internet access for first-time Hugging Face model download
-- A GPU is strongly recommended for retraining; inference can run on CPU
-
----
-
-## 1. Clone the repository
-
-Replace the URL below with the final repository URL if this project is published separately.
-
-```bash
-git clone <repository-url>
-cd openstream-moderation
-```
-
----
-
-## 2. Run setup
-
-```bash
-chmod +x setup.sh launch.sh
-./setup.sh
-```
-
-`setup.sh` will:
-
-1. create `.venv`,
-2. install the dependencies in `requirements.txt`,
-3. create `.env` from `.env.example` if it does not already exist,
-4. run an import/environment check.
-
-The generated `.env` contains only the Hugging Face model ID and environment name.
-
-Manual equivalent:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-
-cp .env.example .env
-```
-
-On Windows:
-
-```powershell
-py -m venv .venv
-.venv\Scripts\Activate.ps1
-
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-
-copy .env.example .env
-```
-
----
-
-## 3. Configure the environment
-
-The service loads the production model directly from Hugging Face.
-
-Create `.env` from the template if it was not already created by `setup.sh`:
-
-```bash
-cp .env.example .env
-```
-
-The environment only needs:
-
-```ini
-MODEL_ID="anutej9/bertweet-guard"
-ENVIRONMENT="development"
-```
-
-### Model loading
-
-On application startup:
-
-```text
-.env
- ↓
-MODEL_ID = anutej9/bertweet-guard
- ↓
-FastAPI starts
- ↓
-Model + tokenizer are pulled from Hugging Face
- ↓
-threshold.json is loaded from the same repository
- ↓
-Inference service becomes ready
-```
-
-The model files are cached automatically by the Hugging Face / Transformers stack after the first download.
-
-There is no local model directory or local artifact fallback in this repository.
-
-The decision threshold should be shipped with the Hugging Face model repository in `threshold.json`, so the API uses the same validation-selected threshold that was produced during training.
-
-
-# Launch
-
-## Start the API and web dashboard
-
-```bash
-./launch.sh
-```
-
-or:
-
-```bash
-./launch.sh api
-```
-
-Equivalent direct command:
-
-```bash
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-```
-
-Once started:
-
-- **Web Dashboard:** `http://localhost:8000`
-- **Swagger / OpenAPI Docs:** `http://localhost:8000/docs`
-- **Health Endpoint:** `http://localhost:8000/health`
-
----
-
-## Open the latest training notebook
-
-```bash
-./launch.sh notebook
-```
-
-## Open a specific notebook
-
-```bash
-./launch.sh path/to/notebook.ipynb
-```
-
----
-
-# API Reference
-
-## Analyze text
-
-```text
-POST /api/v1/predict
-```
-
-### Request
-
-```json
-{
-  "text": "I am going to attend the protest against the governor"
-}
-```
-
-### Response
-
-Example shape:
-
-```json
-{
-  "prediction": "normal",
-  "scores": {
-    "normal": 0.4522,
-    "flagged": 0.5478
-  },
-  "flagged": false,
-  "threshold_info": {
-    "threshold": 0.6200,
-    "margin": -0.0722
-  }
-}
-```
-
-`margin` is:
-
-```text
-flagged_probability - threshold
-```
-
-Therefore:
-
-- positive margin → above the moderation threshold
-- negative margin → below the moderation threshold
-
-The probability and Boolean decision are intentionally both returned so downstream systems can apply their own risk policy if needed.
-
----
-
-# Web Dashboard
-
-The root endpoint serves a lightweight browser interface.
-
-It lets a user:
-
-- enter text,
-- call `/api/v1/predict`,
-- view the normal probability,
-- view the flagged probability,
-- view the current decision threshold,
-- view the threshold margin,
-- open the Swagger API documentation.
-
-The UI is intentionally separate from the inference logic so the FastAPI service can also be consumed directly by another backend or client application.
-
----
-
-# Research Notebook
-
-## Public repository boundary
-
-The earlier THOS experimentation was completed as part of university work. Its source notebook is **intentionally not included in this public repository** in order to comply with university terms.
-
-The README retains only a high-level description of the experimentation process and the resulting modeling direction. The underlying university notebook, assignment material, and implementation are not distributed here.
-
-## `bertweet_moderation_model_v4_bertweet_aligned.ipynb`
-
-The current larger-dataset training notebook.
-
-It contains:
-
-- Jigsaw loading
+- Jigsaw dataset loading
 - binary-label construction
 - BERTweet-aligned preprocessing
 - stratified 90 / 5 / 5 splitting
@@ -523,76 +322,334 @@ It contains:
 - exported-model verification
 - inference sanity checks
 
-Use this notebook for the current training/retraining workflow.
+Use this notebook for the current training and retraining workflow.
+
+### Public repository boundary
+
+The earlier THOS work was completed as part of university coursework. Its source notebook, assignment material, and implementation are intentionally excluded to comply with the university's terms. This README retains the experiment summary and results because they explain how the final modeling direction was selected.
 
 ---
 
-# Model Export and Deployment
+## 9. Evaluation Methodology
 
-The training notebook produces a merged Transformers model and the validation-selected `threshold.json`.
+The workflow deliberately separates the three dataset splits:
 
-For production, those files are uploaded to the Hugging Face repository configured by:
+```text
+Training set
+    → parameter optimization
 
-```ini
-MODEL_ID="anutej9/bertweet-guard"
+Validation set
+    → checkpoint selection
+    → decision-threshold selection
+
+Test set
+    → final evaluation only
 ```
 
-The FastAPI application then loads the deployment model directly from Hugging Face:
+The test set is not used to choose:
+
+- epochs
+- model configuration
+- class weights
+- LoRA parameters
+- decision threshold
+
+This separation reduces information leakage and keeps the held-out test result meaningful.
+
+### Reproducibility
+
+The training workflow uses:
 
 ```python
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
+RANDOM_SEED = 42
+```
+
+For fair comparisons, keep the following fixed unless they are the explicit subject of an ablation:
+
+- dataset split
+- random seed
+- preprocessing
+- evaluation metric
+- threshold-selection procedure
+- test-set isolation
+
+---
+
+## 10. Model Export
+
+After evaluation, the LoRA adapters are merged into the BERTweet backbone. The export contains:
+
+- merged model weights
+- tokenizer files
+- model configuration
+- label mappings
+- `threshold.json`
+
+The exported artifact is uploaded to:
+
+```text
+anutej9/bertweet-guard
+```
+
+The threshold file travels with the model so local inference and production deployment use the same validation-selected decision rule.
+
+Example loading code:
+
+```python
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
+model_id = "anutej9/bertweet-guard"
 
 tokenizer = AutoTokenizer.from_pretrained(
-    settings.model_id,
+    model_id,
     use_fast=False,
     normalization=True,
 )
 
-model = AutoModelForSequenceClassification.from_pretrained(
-    settings.model_id
-)
+model = AutoModelForSequenceClassification.from_pretrained(model_id)
 ```
 
-The service also downloads:
-
-```text
-threshold.json
-```
-
-from the same Hugging Face repository and uses that value for the binary moderation decision.
-
-This keeps the Git repository lightweight: trained model weights are not committed to GitHub.
-
-
-# Production Deployment Considerations
-
-## Memory
-
-A standard float32 BERT/BERTweet-class model can require hundreds of megabytes of memory before runtime overhead.
-
-For memory-constrained deployments, consider:
-
-- FP16 inference where supported,
-- ONNX export,
-- INT8 quantization,
-- a smaller CPU-optimized serving image,
-- separating the web frontend from the inference process.
-
-Do not assume a free-tier instance with roughly 512 MB RAM will comfortably host the unquantized model.
+For local development, Transformers downloads and caches the model on first use. For the production Cloud Run deployment, the model is downloaded during the Docker build and included in the image so a new container does not need to fetch approximately 540 MB of weights at runtime.
 
 ---
 
-## Threshold decoupling
-
-The API exposes both:
+## 11. Repository Structure
 
 ```text
-flagged: true / false
+bertweet-guard/
+├── app/
+│   ├── __init__.py
+│   ├── config.py          # Settings and environment parsing
+│   ├── main.py            # FastAPI app and lifespan model loading
+│   ├── model.py           # Transformers inference and threshold logic
+│   └── schemas.py         # Pydantic request/response schemas
+│
+├── notebooks/
+│   └── bertweet_moderation_model_v4_bertweet_aligned.ipynb
+│
+├── docs/
+│   └── thos_model_comparison.png
+│
+├── Dockerfile             # Production inference image
+├── .env.example           # Local environment template
+├── requirements.txt
+├── setup.sh               # Local environment setup
+├── launch.sh              # API and notebook launcher
+└── README.md
 ```
 
-and the underlying class probabilities.
+The repository separates:
 
-This enables different upstream policies.
+- **model research and training** under `notebooks/`
+- **experiment documentation** under `docs/`
+- **production inference** under `app/`
+- **containerized deployment** through the `Dockerfile`
+
+The browser interface is no longer served by this repository. It lives independently in [bertweet-guard-ui](https://github.com/anutej-kardele/bertweet-guard-ui).
+
+---
+
+## 12. Local Setup
+
+### Prerequisites
+
+- Python 3.10 or newer
+- Git
+- Internet access for the first Hugging Face model download
+- A GPU is strongly recommended for retraining
+- Inference can run on a CPU, although it will be slower
+
+### Clone the repository
+
+```bash
+git clone https://github.com/anutej-kardele/bertweet-guard.git
+cd bertweet-guard
+```
+
+### Automated setup
+
+```bash
+chmod +x setup.sh launch.sh
+./setup.sh
+```
+
+The setup script:
+
+1. creates `.venv`,
+2. installs the dependencies in `requirements.txt`,
+3. creates `.env` from `.env.example` when necessary, and
+4. runs an import and environment check.
+
+### Manual setup
+
+macOS or Linux:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+
+cp .env.example .env
+```
+
+Windows PowerShell:
+
+```powershell
+py -m venv .venv
+.venv\Scripts\Activate.ps1
+
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+
+copy .env.example .env
+```
+
+Example local configuration:
+
+```ini
+MODEL_ID="anutej9/bertweet-guard"
+ENVIRONMENT="development"
+```
+
+### Start the inference API
+
+```bash
+./launch.sh api
+```
+
+Equivalent direct command:
+
+```bash
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Local endpoints:
+
+- Swagger / OpenAPI documentation: `http://localhost:8000/docs`
+- Health endpoint: `http://localhost:8000/health`
+- Prediction endpoint: `http://localhost:8000/api/v1/predict`
+
+### Open the training notebook
+
+```bash
+./launch.sh notebook
+```
+
+Or open a specific notebook:
+
+```bash
+./launch.sh path/to/notebook.ipynb
+```
+
+---
+
+## 13. API Reference
+
+### Health check
+
+```http
+GET /health
+```
+
+This endpoint reports service availability and is also used by the external frontend to pre-warm a scaled-down Cloud Run instance.
+
+### Analyze text
+
+```http
+POST /api/v1/predict
+Content-Type: application/json
+```
+
+Request:
+
+```json
+{
+  "text": "I am going to attend the protest against the governor"
+}
+```
+
+Example response:
+
+```json
+{
+  "prediction": "normal",
+  "scores": {
+    "normal": 0.4522,
+    "flagged": 0.5478
+  },
+  "flagged": false,
+  "threshold_info": {
+    "threshold": 0.676,
+    "margin": -0.1282
+  }
+}
+```
+
+The margin is calculated as:
+
+```text
+flagged probability - decision threshold
+```
+
+- positive margin → above the moderation threshold
+- negative margin → below the moderation threshold
+
+The probability and Boolean decision are both returned so another application can apply a stricter or more permissive review policy when needed.
+
+---
+
+## 14. Production Deployment
+
+Deployment is the final stage of the model lifecycle rather than the primary purpose of the project.
+
+### Architecture
+
+```mermaid
+flowchart LR
+    UI["Static UI<br/>GitHub Pages"] -->|HTTPS request| API["FastAPI<br/>Cloud Run"]
+    API --> MODEL["BERTweet model<br/>loaded in memory"]
+    MODEL --> RULE["Threshold 0.6760"]
+    RULE -->|decision + probabilities| UI
+```
+
+### Backend infrastructure
+
+- **Hosting:** Google Cloud Run in `us-east4`
+- **Containerization:** Docker
+- **CI/CD:** Google Cloud Build
+- **Deployment trigger:** pushes to the `master` branch
+- **Image size:** approximately 3 GB, including PyTorch and model weights
+- **Model initialization:** loaded once through FastAPI's lifespan handler
+- **Scaling:** serverless scaling, including scale-to-zero while idle
+
+The model weights are built directly into the production image. This avoids downloading the model from Hugging Face every time Cloud Run creates a new instance and improves startup consistency.
+
+### Frontend separation
+
+The UI is maintained in the separate [bertweet-guard-ui](https://github.com/anutej-kardele/bertweet-guard-ui) repository and hosted at [bertweet.anutej.us](http://bertweet.anutej.us/).
+
+When the page loads, the frontend immediately calls `/health`. If Cloud Run has scaled the API to zero, this request begins the approximately 15-second model-container startup while the user reads the interface. The UI displays `Waking up API...` until the service is ready.
+
+---
+
+## 15. Security and Privacy
+
+- Cloud Run and GitHub Pages provide HTTPS for data in transit.
+- Pydantic validates the structure and types of incoming request payloads.
+- CORS middleware restricts which browser origins can call the API.
+- The inference container is stateless.
+- The application processes submitted text and returns a result without intentionally persisting the input.
+- The browser frontend contains no API secrets or model credentials.
+
+The service should still be protected with appropriate rate limiting, monitoring, quotas, and access controls before use in a high-volume or sensitive production environment.
+
+---
+
+## 16. Thresholds as Application Policy
+
+The API exposes both the model probabilities and the deployed Boolean decision. This allows an application to build a multi-stage review policy around the classifier.
 
 For example:
 
@@ -607,132 +664,65 @@ flagged_probability < 0.65
     → allow
 ```
 
-Those values are examples of an application policy, not replacements for the validation-selected model threshold.
+These values are only an example of application policy. They do not replace the model's validation-selected deployment threshold.
 
 ---
 
-## Human review
+## 17. Limitations and Responsible Use
 
-For high-impact moderation, use the classifier as one signal in a larger system.
-
-Borderline cases, ambiguous context, political discussion, quoted abuse, satire, or reclaimed language can still require human review.
-
----
-
-# Evaluation Strategy
-
-The training workflow deliberately separates the three datasets:
-
-```text
-Training set
-    → optimization
-
-Validation set
-    → checkpoint selection
-    → decision-threshold selection
-
-Test set
-    → final evaluation only
-```
-
-The test set is not used to select:
-
-- epochs,
-- model configuration,
-- class weights,
-- LoRA parameters,
-- decision threshold.
-
-Macro F1 is the main metric because accuracy alone can hide weak minority-class performance.
-
----
-
-# Reproducibility
-
-The training notebooks use:
-
-```python
-RANDOM_SEED = 42
-```
-
-For fair experiment comparisons, keep these fixed unless they are the explicit subject of an ablation:
-
-- dataset split
-- random seed
-- preprocessing
-- evaluation metric
-- threshold-selection procedure
-- test-set isolation
-
----
-
-# Limitations
-
-This is a research and deployment prototype, not a complete moderation policy.
+This is an AI research and deployment project, not a complete moderation policy.
 
 Known limitations include:
 
-- current production output is binary rather than multi-policy,
+- the production output is binary rather than multi-policy,
 - Jigsaw annotations can contain dataset bias,
 - BERTweet has a relatively short sequence budget,
-- long Jigsaw comments may be truncated,
-- sarcasm and context remain difficult,
-- political or protest-related language can be close to the decision boundary,
-- one global threshold may not fit every application,
+- long comments may be truncated,
+- sarcasm and implicit context remain difficult,
+- quoted abuse can be mistaken for direct abuse,
+- political and protest-related language may be close to the decision boundary,
+- reclaimed language can be misclassified,
+- one global threshold may not suit every application, and
 - the current model is primarily intended for English-language text.
 
----
-
-# Future Work
-
-Potential improvements include:
-
-- chunking long comments rather than truncating them,
-- probability calibration,
-- hard-negative mining,
-- broader fairness analysis on the final binary model,
-- multi-label policy categories,
-- ONNX export,
-- INT8 quantization,
-- FP16 deployment,
-- Docker packaging,
-- automated API tests,
-- production monitoring and threshold-drift analysis.
+For high-impact moderation, use the classifier as one signal in a broader system. Borderline and context-dependent cases should be sent to a human reviewer.
 
 ---
 
-# Summary
+## 18. Summary
 
-The project follows a deliberate **research-first, scale-second, deploy-third** strategy:
+BERTweet Guard follows a **research-first, scale-second, deploy-third** workflow:
 
 ```text
-THOS
-    ↓
-Compare many modeling approaches
-    ↓
-Identify BERTweet + LoRA + Focal + Cosine as strongest direction
-    ↓
-Move to large Jigsaw dataset
-    ↓
-Refine weighting, warmup, preprocessing, and LoRA setup
-    ↓
-Tune checkpoint selection using validation Macro F1
-    ↓
-Tune deployment threshold on validation data
-    ↓
-Evaluate once on the held-out test set
-    ↓
-Merge/export the model
-    ↓
-Serve through FastAPI + browser dashboard
+THOS experimentation
+        ↓
+Compare BERT, BERTweet, full fine-tuning, LoRA, and loss variants
+        ↓
+Select BERTweet + LoRA + Focal Loss + cosine scheduling
+        ↓
+Scale to the Jigsaw Toxic Comment dataset
+        ↓
+Refine preprocessing, weighting, warmup, and LoRA configuration
+        ↓
+Tune checkpoint selection with validation Macro F1
+        ↓
+Tune the deployment threshold on validation predictions
+        ↓
+Evaluate once on held-out test data
+        ↓
+Merge and export the trained model
+        ↓
+Deploy the artifact through FastAPI, Docker, and Cloud Run
 ```
 
-The final system therefore combines both sides of the project:
-
-**controlled model experimentation** and **practical deployment-oriented inference**.
+The deployed application is useful evidence that the model can operate outside a notebook, but the main contribution of the project is the complete AI workflow: **comparative experimentation, efficient fine-tuning, class-imbalance handling, careful evaluation, threshold calibration, and reproducible model export**.
 
 ---
 
 ## Public Release Scope
 
-This public repository contains the current Jigsaw/BERTweet moderation implementation and deployment service.
+This repository contains the current Jigsaw/BERTweet training workflow, model documentation, exported-model integration, and inference API. The earlier university THOS implementation is intentionally excluded; only its high-level comparison and conclusions are published.
+
+## Author
+
+Built by [Anutej Kardele](https://anutej.us).
