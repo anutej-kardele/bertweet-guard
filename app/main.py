@@ -27,7 +27,12 @@ app = FastAPI(
 # 2. Add CORS Middleware to allow external frontends
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all domains to test the frontend anywhere
+    allow_origins=[
+        "http://localhost:5173",
+        "https://bertweet.anutej.us",
+        "https://openstream.anutej.us",
+        "https://anutej.us",
+    ],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -57,7 +62,7 @@ async def health_check():
 async def predict(request: ModerationRequest):
     classifier = app.state.classifier
     
-    prediction_label, scores = classifier.predict(request.text)
+    _, scores = classifier.predict(request.text)
     
     # Use the threshold from your configured settings
     flagged_prob = scores.get("flagged", 0.0)
