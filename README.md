@@ -1,8 +1,8 @@
 # BERTweet Guard — BERTweet + LoRA Text Moderation
 
-An end-to-end AI model development project for fine-tuning **BERTweet** with **LoRA**, **Weighted Focal Loss**, cosine learning-rate scheduling, and validation-calibrated decision thresholds.
+An end-to-end AI model development project for fine-tuning **BERTweet** with **LoRA** on a multi-source moderation corpus, using source/class-weighted sampling, cross-entropy training, validation-calibrated decision thresholds, and deployment-focused artifact verification.
 
-The central focus of this repository is the **machine-learning work**: controlled experimentation, model comparison, large-dataset fine-tuning, evaluation, threshold optimization, and export of a reusable moderation model. The FastAPI service, Docker image, CI/CD pipeline, and Cloud Run deployment complete the project by making the trained model usable outside a notebook.
+The central focus of this repository is the **machine-learning work**: controlled experimentation, dataset redesign, efficient fine-tuning, source-aware evaluation, threshold optimization, robustness testing, and export of a reusable moderation model. The FastAPI service, Docker image, CI/CD pipeline, and Cloud Run deployment complete the project by making the trained model usable outside a notebook.
 
 > **Live application:** [bertweet.anutej.us](http://bertweet.anutej.us/)  
 > **Frontend repository:** [bertweet-guard-ui](https://github.com/anutej-kardele/bertweet-guard-ui)  
@@ -11,25 +11,33 @@ The central focus of this repository is the **machine-learning work**: controlle
 | Project area | Current choice |
 | --- | --- |
 | Backbone | `vinai/bertweet-base` |
-| Fine-tuning method | LoRA |
-| Training loss | Weighted Focal Loss |
-| Primary selection metric | Macro F1 |
+| Fine-tuning method | LoRA, `r=32` |
+| Training corpus | Jigsaw + HateXplain + Davidson + TweetEval Offensive |
+| Training sampler | Inverse `(source, label)` frequency weighted sampling |
+| Training loss | Cross-Entropy |
+| Checkpoint selection | Source-balanced validation Macro F1 |
 | Production task | Binary moderation: `normal` vs. `flagged` |
-| Deployed decision threshold | `0.6760` |
+| Deployed decision threshold | `0.7990` |
+| Test Overall Macro F1 | **0.9054** |
+| Test Source-Balanced Macro F1 | **0.8309** |
+| Final artifact regression suite | **15 / 15** |
 | Inference service | FastAPI on Google Cloud Run |
 
 ---
 
 ## 1. Project Motivation
 
-Content moderation is not only a deployment problem. The main challenge is finding a model and training configuration that can identify harmful text without incorrectly flagging too much benign discussion.
+Content moderation is not only a deployment problem. The main challenge is building a model that can detect harmful language while avoiding false positives on ordinary discussion, longer posts, technical writing, opinions, and other benign social-media content.
 
-This project was developed in two research phases:
+The project developed through three research stages:
 
-1. **Experiment broadly on the smaller THOS dataset** to compare model families, fine-tuning strategies, LoRA configurations, loss functions, schedulers, and training choices.
-2. **Scale the strongest approach to the much larger Jigsaw Toxic Comment dataset**, then refine preprocessing, class weighting, checkpoint selection, evaluation, and the decision threshold used during inference.
+1. **Experiment broadly on the smaller THOS dataset** to compare BERT, BERTweet, full fine-tuning, LoRA configurations, loss functions, schedulers, and training choices.
+2. **Scale the strongest direction to Jigsaw Toxic Comment Classification** and establish a strong large-dataset baseline.
+3. **Redesign the production training corpus around four complementary datasets** after deployment testing exposed weaknesses that were not visible from Jigsaw-only benchmark scores.
 
-The resulting model is exposed through an API and a separate browser interface, but those deployment components support the primary objective: producing a practical, customizable text-moderation model.
+The current model therefore keeps the useful toxicity and threat coverage from Jigsaw while adding several social-media datasets to better match the language expected in OpenStream and other short-form user-generated applications.
+
+The resulting model is exposed through an API and separate browser interface, but those deployment components support the primary objective: producing a practical, reusable text-moderation model.
 
 ---
 
@@ -39,7 +47,7 @@ The resulting model is exposed through an API and a separate browser interface, 
 
 > **Public repository note:** The THOS work was completed as part of a university project. The original THOS notebook and university-project implementation are not included in this public repository. Only a high-level summary of the experiments, results, and conclusions is documented here.
 
-THOS provided a smaller and faster environment for comparing ideas before committing compute to a much larger dataset.
+THOS provided a smaller and faster environment for comparing ideas before committing compute to larger datasets.
 
 The THOS task used three classes:
 
@@ -106,58 +114,34 @@ The best-performing THOS configuration was:
 
 </details>
 
-The experiments pointed to a clear modeling direction:
+These experiments established the initial direction:
 
 ```text
 BERTweet
     +
 LoRA
     +
-Focal Loss
+careful imbalance handling
     +
-Cosine learning-rate scheduling
+cosine learning-rate scheduling
 ```
 
-This combination became the starting point for the larger-data phase. The later Jigsaw work refined the configuration rather than restarting the search from scratch.
+The later stages retained BERTweet + LoRA while changing the data and optimization strategy when larger-scale evidence showed that the original training setup was not sufficient for production behavior.
 
 ---
 
-## 3. Why These Modeling Choices?
+### Phase 2 — Scaling to Jigsaw
 
-### BERTweet
+The next stage moved to the much larger **Jigsaw Toxic Comment Classification** dataset.
 
-BERTweet is a transformer model pretrained on English tweets. Its pretraining domain makes it a natural candidate for short, informal, user-generated text containing unconventional punctuation, abbreviations, mentions, and other social-media patterns.
-
-### LoRA
-
-Low-Rank Adaptation adds trainable low-rank matrices to selected transformer modules while leaving most pretrained parameters frozen. This makes experimentation more memory-efficient than full-model fine-tuning and allows different adaptation configurations to be compared without training every model parameter.
-
-### Weighted Focal Loss
-
-Moderation data is imbalanced: benign examples are usually more common than harmful examples. Weighted Focal Loss combines class weighting with extra attention to difficult examples, helping the training objective focus less on already-easy majority-class predictions.
-
-### Cosine scheduling with warmup
-
-Warmup reduces instability during the first training steps, while cosine decay gradually lowers the learning rate later in training. This combination performed well during the THOS comparison and was carried into the Jigsaw phase.
-
-### Macro F1
-
-Accuracy can look strong even when a model performs poorly on the less frequent harmful class. Macro F1 assigns equal importance to each class's F1 score, making it a more useful primary metric for this project.
-
----
-
-## 4. Scaling the Model to Jigsaw
-
-After identifying the strongest direction on THOS, the project moved to the much larger **Jigsaw Toxic Comment Classification** dataset.
-
-The Jigsaw source labels are collapsed into a binary moderation target:
+Jigsaw's source labels were collapsed into the binary production target:
 
 ```text
 normal  = 0
 flagged = 1
 ```
 
-A comment is marked `flagged` when any of these source labels is positive:
+A comment was marked `flagged` when any of these labels was positive:
 
 - `toxic`
 - `severe_toxic`
@@ -166,13 +150,125 @@ A comment is marked `flagged` when any of these source labels is positive:
 - `insult`
 - `identity_hate`
 
-The larger dataset uses a **90 / 5 / 5 stratified train / validation / test split**.
+The Jigsaw-only model produced a strong held-out benchmark:
 
-- **Training split:** parameter optimization
-- **Validation split:** checkpoint selection and decision-threshold tuning
-- **Test split:** final evaluation only
+| Metric | Result |
+| --- | ---: |
+| Threshold-tuned validation Macro F1 | **0.9185** |
+| Test Macro F1 | **0.9174** |
+| Test accuracy | **0.9710** |
+| Selected threshold | 0.62 |
+| Flagged precision | 0.89 |
+| Flagged recall | 0.81 |
+| Flagged F1 | 0.85 |
 
-### Current training configuration
+However, production-style testing exposed an important limitation: a high in-domain Jigsaw test score did not guarantee reliable behavior on OpenStream-style posts.
+
+Longer benign technical and conversational statements were sometimes assigned unexpectedly high flagged probabilities. This shifted the project from optimizing only a single-dataset benchmark toward evaluating **cross-domain generalization, source balance, sentence length, and deployment behavior**.
+
+---
+
+### Phase 3 — Current four-source moderation model
+
+The current model combines four complementary datasets:
+
+1. **Jigsaw Toxic Comment Classification**  
+   Broad toxicity, threat, obscenity, insult, and identity-hate coverage.
+
+2. **HateXplain**  
+   Twitter/Gab posts annotated as hate speech, offensive language, or normal.
+
+3. **Davidson Hate Speech & Offensive Language**  
+   Twitter posts labeled as hate speech, offensive language, or neither.
+
+4. **TweetEval Offensive**  
+   Twitter offensive/non-offensive benchmark data.
+
+All four are mapped to the same production contract:
+
+```text
+normal  = 0
+flagged = 1
+```
+
+`TweetEval Offensive` already represents the OffensEval/OLID task, so OLID is not included again as a separate source.
+
+After cross-source de-duplication, the combined corpus contains:
+
+```text
+217,270 unique labeled examples
+```
+
+with source-aware splits:
+
+| Split | Rows |
+| --- | ---: |
+| Train | **195,542** |
+| Validation | **10,863** |
+| Test | **10,865** |
+
+Every source is independently split **90 / 5 / 5** before the corresponding partitions are combined.
+
+No destructive majority-class downsampling is performed.
+
+---
+
+## 3. Why the Current Modeling Choices?
+
+### BERTweet
+
+BERTweet is a transformer model pretrained on English tweets. Its pretraining domain makes it a natural candidate for short, informal, user-generated text containing unconventional punctuation, abbreviations, mentions, and other social-media patterns.
+
+### LoRA
+
+Low-Rank Adaptation adds trainable low-rank matrices to selected transformer modules while leaving most pretrained parameters frozen. The current setup trains approximately **5.9 million parameters** out of roughly **140.8 million total parameters**.
+
+### Four-source training corpus
+
+Jigsaw provides large-scale toxicity coverage, while HateXplain, Davidson, and TweetEval add social-media language and offensive-language supervision.
+
+Using the four sources together gives the model a broader moderation signal than relying on a single dataset.
+
+### Source/class-weighted sampling
+
+Jigsaw is much larger than the other datasets, and the class distributions differ substantially across sources.
+
+Instead of deleting examples, the training loader uses `WeightedRandomSampler` with weights inversely proportional to each `(source, label)` group size.
+
+This means:
+
+- all training rows remain available,
+- smaller sources receive meaningful exposure,
+- `normal` and `flagged` examples are balanced through sampling rather than destructive downsampling, and
+- Jigsaw cannot dominate training simply because it contains more rows.
+
+### Cross-Entropy
+
+The current model uses standard:
+
+```python
+CrossEntropyLoss()
+```
+
+with no additional class weights.
+
+Class/source balancing is handled by the sampler rather than combining weighted sampling with an additional class-weighted loss.
+
+### Source-balanced Macro F1
+
+Overall Macro F1 can still be dominated by the largest source.
+
+Checkpoint selection and threshold optimization therefore use the **mean Macro F1 across the four validation sources**.
+
+This gives Jigsaw, HateXplain, Davidson, and TweetEval equal importance when choosing the model checkpoint and deployment threshold.
+
+### Cosine scheduling with warmup
+
+The optimizer uses cosine learning-rate decay with a 6% warmup period. This preserves the stable scheduling strategy that performed well during the earlier experiments.
+
+---
+
+## 4. Current Training Configuration
 
 | Component | Value |
 | --- | --- |
@@ -185,9 +281,9 @@ The larger dataset uses a **90 / 5 / 5 stratified train / validation / test spli
 | LoRA alpha | 64 |
 | LoRA dropout | 0.20 |
 | LoRA targets | `query`, `key`, `value`, `dense` |
-| Loss | Weighted Focal Loss |
-| Focal gamma | 1.0 |
-| Class weights | `[1.0, 1.25]` |
+| Loss | `CrossEntropyLoss` |
+| Extra class weights | None |
+| Train sampling | Inverse `(source, label)` frequency |
 | Learning rate | `5e-5` |
 | Weight decay | `0.05` |
 | Maximum epochs | 5 |
@@ -195,148 +291,252 @@ The larger dataset uses a **90 / 5 / 5 stratified train / validation / test spli
 | Scheduler | Cosine with warmup |
 | Warmup ratio | 0.06 |
 | Random seed | 42 |
-| Primary metric | Macro F1 |
+| Checkpoint metric | Source-balanced validation Macro F1 |
+| Threshold metric | Source-balanced validation Macro F1 |
 
-The v4 notebook aligns preprocessing more closely with BERTweet and selects checkpoints using **threshold-tuned validation Macro F1**.
+The selected checkpoint came from epoch 4:
+
+```text
+Source-balanced Val Macro F1 = 0.8381
+Overall Val Macro F1         = 0.9069
+Validation threshold         = 0.800
+```
+
+A fine-grained validation sweep then selected the final deployment threshold:
+
+```text
+0.799
+```
 
 ---
 
 ## 5. End-to-End Modeling Pipeline
 
 ```text
-Jigsaw toxicity data
+Jigsaw + HateXplain + Davidson + TweetEval Offensive
         ↓
-Binary normal / flagged labels
+Unified binary labels: normal / flagged
+        ↓
+Cross-source de-duplication
+        ↓
+Source-aware 90 / 5 / 5 splitting
         ↓
 Minimal BERTweet-aligned preprocessing
         ↓
 BERTweet tokenizer
         ↓
+Source/class-weighted training sampler
+        ↓
 BERTweet + LoRA fine-tuning
         ↓
-Weighted Focal Loss
+Cross-Entropy
         ↓
 Cosine learning-rate schedule + warmup
         ↓
-Validation probability predictions
+Validation probabilities by source
         ↓
-Threshold optimization using Macro F1
+Source-balanced checkpoint selection
         ↓
-Best checkpoint selection
+Source-balanced threshold optimization
         ↓
 Held-out test evaluation
         ↓
+Length-bias and source-wise diagnostics
+        ↓
 Merge LoRA adapters into BERTweet
         ↓
-Export model, tokenizer, and threshold
+Clean model + tokenizer artifact export
         ↓
-Serve the trained artifact through FastAPI
+Tokenizer consistency gate
+        ↓
+15-case final-artifact regression suite
+        ↓
+Package / upload to Hugging Face
+        ↓
+Serve through FastAPI
 ```
 
-The decision threshold is treated as part of the trained deployment artifact, not as an unrelated API setting.
+The decision threshold and tokenizer behavior are treated as part of the deployment artifact, not as unrelated API settings.
 
 ---
 
 ## 6. Decision-Threshold Optimization
 
-The service does not simply use the class with the largest logit:
+The service does not simply use:
 
 ```python
 prediction = logits.argmax()
 ```
 
-Instead, it computes the probability of the `flagged` class and compares it with a threshold selected on validation data:
+Instead, it computes the probability of the `flagged` class and compares it with the validation-selected threshold:
 
 ```python
 prediction = int(flagged_probability >= decision_threshold)
 ```
 
-The currently deployed threshold is:
+The current threshold is:
 
 ```text
-0.6760
+0.7990
 ```
 
-Example:
+The threshold was selected on validation predictions using the **source-balanced Macro F1** objective.
 
-```text
-flagged probability = 0.5478
-threshold           = 0.6760
-margin              = -0.1282
-prediction          = NORMAL
-```
+This is important because the four validation sources have very different sizes. Optimizing only the combined validation set would allow the much larger Jigsaw partition to influence the operating point more strongly than the social-media datasets.
 
-Even though the flagged probability is above `0.50`, it remains below the validation-selected operating threshold.
-
-This separation is useful because it allows the model's decision boundary to be calibrated for the desired balance between false positives and false negatives without retraining the network. The API also returns the raw class probabilities so downstream systems can apply their own review policies.
+The test set is not used to choose the threshold.
 
 ---
 
-## 7. Reported Results
+## 7. Current Results
 
-### THOS result
-
-| Metric | Result |
-| --- | ---: |
-| Best test Macro F1 | **0.6848** |
-| Best validation F1 | 0.6741 |
-| Best configuration | BERTweet + LoRA `r=16` + Focal (`γ=1`) + Cosine |
-
-### Jigsaw pre-v4 benchmark
-
-A large-dataset run completed before the v4 preprocessing and checkpoint-selection changes produced:
+### Overall test results
 
 | Metric | Result |
 | --- | ---: |
-| Threshold-tuned validation Macro F1 | **0.9185** |
-| Test Macro F1 | **0.9174** |
-| Test accuracy | **0.9710** |
-| Selected threshold | **0.62** |
-| Flagged precision | 0.89 |
-| Flagged recall | 0.81 |
-| Flagged F1 | 0.85 |
+| Overall Test Macro F1 | **0.9054** |
+| Source-Balanced Test Macro F1 | **0.8309** |
+| Test Accuracy | **0.9301** |
+| Normal precision | 0.9552 |
+| Normal recall | 0.9523 |
+| Normal F1 | **0.9538** |
+| Flagged precision | 0.8529 |
+| Flagged recall | 0.8610 |
+| Flagged F1 | **0.8569** |
+| Selected threshold | **0.7990** |
 
-These metrics are retained as a historical benchmark. The v4 workflow changes preprocessing alignment and checkpoint selection, so its results should be regenerated from the notebook rather than copied from the earlier run. The current deployment threshold of `0.6760` belongs to the newer exported artifact and should not be confused with the historical `0.62` benchmark threshold.
+### Per-source test performance
+
+| Source | Macro F1 | Accuracy |
+| --- | ---: | ---: |
+| Davidson | **0.9017** | 0.9411 |
+| Jigsaw | **0.9015** | 0.9611 |
+| TweetEval Offensive | 0.7614 | 0.7903 |
+| HateXplain | 0.7591 | 0.7615 |
+
+The difference between **Overall Macro F1** and **Source-Balanced Macro F1** is intentional and useful.
+
+The overall metric describes performance across all held-out examples, while the source-balanced metric gives each dataset equal weight and therefore better exposes cross-domain weaknesses.
 
 ---
 
-## 8. Research Notebook
+## 8. Long-Text False-Positive Diagnostic
 
-### `bertweet_moderation_model_v4_bertweet_aligned.ipynb`
+A major motivation for the current training redesign was false-positive behavior on longer benign statements.
 
-The current large-dataset training notebook includes:
+The current model explicitly measures the false-positive rate on **known-normal test examples** across token-length bins.
 
-- Jigsaw dataset loading
-- binary-label construction
-- BERTweet-aligned preprocessing
-- stratified 90 / 5 / 5 splitting
-- sequence-length diagnostics
-- BERTweet + LoRA training
-- Weighted Focal Loss
-- cosine scheduling with warmup
-- threshold-tuned checkpoint selection
-- fine-grained threshold search
-- held-out test evaluation
-- LoRA merge
-- production artifact export
-- exported-model verification
-- inference sanity checks
+| Normal-text token length | Samples | Avg. flagged probability | False-positive rate |
+| --- | ---: | ---: | ---: |
+| ≤ 8 | 213 | 0.0950 | 6.57% |
+| 8–16 | 1,022 | 0.0953 | 7.34% |
+| 16–32 | 1,803 | 0.0851 | 5.44% |
+| 32–64 | 2,215 | 0.0782 | 5.46% |
+| 64–96 | 1,032 | 0.0563 | 3.20% |
+| 96–128 | 605 | 0.0641 | 2.64% |
+| >128 | 1,335 | 0.0661 | 2.62% |
+
+Correlation between token length and flagged probability for normal held-out examples:
+
+```text
+-0.0173
+```
+
+The value is close to zero, and the false-positive rate does not increase with longer normal text in the current held-out test.
+
+This diagnostic is retained because a single overall benchmark score would not reveal this type of deployment failure.
+
+---
+
+## 9. Final-Artifact Regression Suite
+
+Before the model is packaged, the notebook reloads the final disk artifact and runs a fixed **15-example regression suite**.
+
+The suite contains:
+
+- 10 longer statements,
+- 5 shorter statements,
+- benign technical/conversational posts,
+- ordinary opinions,
+- protest/political discussion,
+- insults,
+- abuse, and
+- threats.
+
+Current result:
+
+```text
+15 / 15 PASS
+```
+
+Representative final-artifact outputs:
+
+| Text | Expected | Flagged probability | Result |
+| --- | --- | ---: | --- |
+| `Cold starts are a tax you pay for free hosting...` | normal | 0.0021 | PASS |
+| `Tried explaining JOIN FETCH to someone...` | normal | 0.0068 | PASS |
+| `I am going to attend the protest against the governor...` | normal | 0.0019 | PASS |
+| `You keep ruining every task you touch...` | flagged | 0.8945 | PASS |
+| `If that person comes near me again I am going to hurt them badly...` | flagged | 0.9646 | PASS |
+| `you are an idiot` | flagged | 0.9944 | PASS |
+| `I want to kill the person` | flagged | 0.9977 | PASS |
+
+These examples are used as a **regression suite**, not as training data or a threshold-tuning set.
+
+---
+
+## 10. Research Notebook
+
+### `bertweet_moderation_model.ipynb`
+
+The current public training notebook includes:
+
+- four-source dataset loading,
+- binary-label harmonization,
+- cross-source de-duplication,
+- source-aware 90 / 5 / 5 splitting,
+- BERTweet-aligned preprocessing,
+- sequence-length diagnostics,
+- source/class-weighted training,
+- BERTweet + LoRA fine-tuning,
+- Cross-Entropy,
+- cosine scheduling with warmup,
+- source-balanced checkpoint selection,
+- fine-grained threshold optimization,
+- overall and source-balanced evaluation,
+- per-source test metrics,
+- long-text false-positive diagnostics,
+- LoRA merge,
+- production artifact export,
+- tokenizer consistency verification,
+- 15-case final-artifact regression testing, and
+- downloadable model packaging.
 
 Use this notebook for the current training and retraining workflow.
 
 ### Public repository boundary
 
-The earlier THOS work was completed as part of university coursework. Its source notebook, assignment material, and implementation are intentionally excluded to comply with the university's terms. This README retains the experiment summary and results because they explain how the final modeling direction was selected.
+The earlier THOS work was completed as part of university coursework. Its source notebook, assignment material, and implementation are intentionally excluded to comply with the university's terms.
+
+This README retains the THOS experiment summary because it explains how BERTweet + LoRA emerged as the modeling direction, while the public notebook represents the **current multi-source training system**.
 
 ---
 
-## 9. Evaluation Methodology
+## 11. Evaluation Methodology
 
-The workflow deliberately separates the three dataset splits:
+Every source is independently divided into:
+
+```text
+90% training
+ 5% validation
+ 5% test
+```
+
+The corresponding source partitions are then combined.
 
 ```text
 Training set
-    → parameter optimization
+    → parameter optimization through weighted sampling
 
 Validation set
     → checkpoint selection
@@ -344,46 +544,66 @@ Validation set
 
 Test set
     → final evaluation only
+    → per-source evaluation
+    → length-bias diagnostics
 ```
 
 The test set is not used to choose:
 
-- epochs
-- model configuration
-- class weights
-- LoRA parameters
-- decision threshold
+- epochs,
+- LoRA parameters,
+- sampling weights,
+- learning rate,
+- decision threshold, or
+- checkpoint.
 
-This separation reduces information leakage and keeps the held-out test result meaningful.
+### Two validation metrics
+
+The notebook tracks:
+
+1. **Overall Macro F1**
+2. **Source-Balanced Macro F1**
+
+Source-Balanced Macro F1 is calculated by evaluating each source independently and averaging the resulting Macro F1 scores.
+
+This is the primary checkpoint-selection metric.
 
 ### Reproducibility
 
-The training workflow uses:
+The workflow uses:
 
 ```python
 RANDOM_SEED = 42
 ```
 
-For fair comparisons, keep the following fixed unless they are the explicit subject of an ablation:
+For fair comparisons, keep the following fixed unless they are the explicit subject of an experiment:
 
-- dataset split
-- random seed
-- preprocessing
-- evaluation metric
-- threshold-selection procedure
-- test-set isolation
+- source datasets,
+- dataset split,
+- random seed,
+- preprocessing,
+- source/class sampling strategy,
+- evaluation metric,
+- threshold-selection procedure, and
+- test-set isolation.
 
 ---
 
-## 10. Model Export
+## 12. Model Export and Tokenizer Verification
 
-After evaluation, the LoRA adapters are merged into the BERTweet backbone. The export contains:
+After evaluation, the LoRA adapters are merged into the BERTweet backbone.
 
-- merged model weights
-- tokenizer files
-- model configuration
-- label mappings
-- `threshold.json`
+The export contains:
+
+- merged model weights,
+- model configuration,
+- original BERTweet `vocab.txt`,
+- original BERTweet `bpe.codes`,
+- tokenizer metadata,
+- label mappings,
+- `threshold.json`,
+- training/evaluation metadata, and
+- the LoRA adapter for future continued training.
 
 The exported artifact is uploaded to:
 
@@ -391,29 +611,47 @@ The exported artifact is uploaded to:
 anutej9/bertweet-guard
 ```
 
-The threshold file travels with the model so local inference and production deployment use the same validation-selected decision rule.
+### Why the tokenizer export is handled explicitly
 
-Example loading code:
+During deployment verification, re-saving the BERTweet tokenizer changed the produced token IDs and therefore changed the model probabilities.
+
+The current workflow avoids that failure mode:
+
+1. save the merged model into a clean artifact directory,
+2. copy the original `vocab.txt` and `bpe.codes` directly from `vinai/bertweet-base`,
+3. load the exported tokenizer explicitly with `BertweetTokenizer`,
+4. compare token IDs and attention masks against the training tokenizer, and
+5. stop packaging if any mismatch is detected.
+
+The final artifact passed the tokenizer consistency gate on representative short and long examples.
+
+### Loading from Hugging Face
 
 ```python
-from transformers import AutoModelForSequenceClassification, AutoTokenizer
+from transformers import (
+    BertweetTokenizer,
+    AutoModelForSequenceClassification,
+)
 
 model_id = "anutej9/bertweet-guard"
 
-tokenizer = AutoTokenizer.from_pretrained(
+tokenizer = BertweetTokenizer.from_pretrained(
     model_id,
-    use_fast=False,
     normalization=True,
 )
 
-model = AutoModelForSequenceClassification.from_pretrained(model_id)
+model = AutoModelForSequenceClassification.from_pretrained(
+    model_id,
+)
 ```
 
-For local development, Transformers downloads and caches the model on first use. For the production Cloud Run deployment, the model is downloaded during the Docker build and included in the image so a new container does not need to fetch approximately 540 MB of weights at runtime.
+The backend also reads `threshold.json` from the same model repository.
+
+For local development, Transformers downloads and caches the model on first use. For the production Cloud Run deployment, the model can be included in the Docker image so a new container does not need to download the model weights at runtime.
 
 ---
 
-## 11. Repository Structure
+## 13. Repository Structure
 
 ```text
 bertweet-guard/
@@ -425,7 +663,7 @@ bertweet-guard/
 │   └── schemas.py         # Pydantic request/response schemas
 │
 ├── notebooks/
-│   └── bertweet_moderation_model_v4_bertweet_aligned.ipynb
+│   └── bertweet_moderation_model.ipynb
 │
 ├── docs/
 │   └── thos_model_comparison.png
@@ -440,16 +678,16 @@ bertweet-guard/
 
 The repository separates:
 
-- **model research and training** under `notebooks/`
-- **experiment documentation** under `docs/`
-- **production inference** under `app/`
-- **containerized deployment** through the `Dockerfile`
+- **current model research and training** under `notebooks/`,
+- **historical experiment documentation** under `docs/`,
+- **production inference** under `app/`, and
+- **containerized deployment** through the `Dockerfile`.
 
-The browser interface is no longer served by this repository. It lives independently in [bertweet-guard-ui](https://github.com/anutej-kardele/bertweet-guard-ui).
+The browser interface lives independently in [bertweet-guard-ui](https://github.com/anutej-kardele/bertweet-guard-ui).
 
 ---
 
-## 12. Local Setup
+## 14. Local Setup
 
 ### Prerequisites
 
@@ -537,15 +775,15 @@ Local endpoints:
 ./launch.sh notebook
 ```
 
-Or open a specific notebook:
+Or open the current notebook directly:
 
 ```bash
-./launch.sh path/to/notebook.ipynb
+./launch.sh notebooks/bertweet_moderation_model.ipynb
 ```
 
 ---
 
-## 13. API Reference
+## 15. API Reference
 
 ### Health check
 
@@ -566,7 +804,7 @@ Request:
 
 ```json
 {
-  "text": "I am going to attend the protest against the governor"
+  "text": "I am going to attend the protest against the governor this weekend because I want to hear what the speakers have to say."
 }
 ```
 
@@ -576,13 +814,13 @@ Example response:
 {
   "prediction": "normal",
   "scores": {
-    "normal": 0.4522,
-    "flagged": 0.5478
+    "normal": 0.9981,
+    "flagged": 0.0019
   },
   "flagged": false,
   "threshold_info": {
-    "threshold": 0.676,
-    "margin": -0.1282
+    "threshold": 0.799,
+    "margin": -0.7971
   }
 }
 ```
@@ -600,7 +838,7 @@ The probability and Boolean decision are both returned so another application ca
 
 ---
 
-## 14. Production Deployment
+## 16. Production Deployment
 
 Deployment is the final stage of the model lifecycle rather than the primary purpose of the project.
 
@@ -609,8 +847,8 @@ Deployment is the final stage of the model lifecycle rather than the primary pur
 ```mermaid
 flowchart LR
     UI["Static UI<br/>GitHub Pages"] -->|HTTPS request| API["FastAPI<br/>Cloud Run"]
-    API --> MODEL["BERTweet model<br/>loaded in memory"]
-    MODEL --> RULE["Threshold 0.6760"]
+    API --> MODEL["BERTweet + LoRA model<br/>merged and loaded in memory"]
+    MODEL --> RULE["Threshold 0.7990"]
     RULE -->|decision + probabilities| UI
 ```
 
@@ -620,21 +858,20 @@ flowchart LR
 - **Containerization:** Docker
 - **CI/CD:** Google Cloud Build
 - **Deployment trigger:** pushes to the `master` branch
-- **Image size:** approximately 3 GB, including PyTorch and model weights
 - **Model initialization:** loaded once through FastAPI's lifespan handler
 - **Scaling:** serverless scaling, including scale-to-zero while idle
 
-The model weights are built directly into the production image. This avoids downloading the model from Hugging Face every time Cloud Run creates a new instance and improves startup consistency.
+The model can be built directly into the production image. This avoids downloading the model from Hugging Face every time Cloud Run creates a new instance and improves startup consistency.
 
 ### Frontend separation
 
 The UI is maintained in the separate [bertweet-guard-ui](https://github.com/anutej-kardele/bertweet-guard-ui) repository and hosted at [bertweet.anutej.us](http://bertweet.anutej.us/).
 
-When the page loads, the frontend immediately calls `/health`. If Cloud Run has scaled the API to zero, this request begins the approximately 15-second model-container startup while the user reads the interface. The UI displays `Waking up API...` until the service is ready.
+When the page loads, the frontend immediately calls `/health`. If Cloud Run has scaled the API to zero, the request begins waking the model container while the user reads the interface.
 
 ---
 
-## 15. Security and Privacy
+## 17. Security and Privacy
 
 - Cloud Run and GitHub Pages provide HTTPS for data in transit.
 - Pydantic validates the structure and types of incoming request payloads.
@@ -647,81 +884,97 @@ The service should still be protected with appropriate rate limiting, monitoring
 
 ---
 
-## 16. Thresholds as Application Policy
+## 18. Thresholds as Application Policy
 
-The API exposes both the model probabilities and the deployed Boolean decision. This allows an application to build a multi-stage review policy around the classifier.
+The API exposes both the model probabilities and the deployed Boolean decision. This allows another application to build a multi-stage review policy around the classifier.
 
 For example:
 
 ```text
-flagged_probability >= 0.85
+flagged_probability >= 0.95
     → automatically reject
 
-0.65 <= flagged_probability < 0.85
-    → send to human review
+0.799 <= flagged_probability < 0.95
+    → moderation review
 
-flagged_probability < 0.65
-    → allow
+flagged_probability < 0.799
+    → allow under the model's default decision rule
 ```
 
-These values are only an example of application policy. They do not replace the model's validation-selected deployment threshold.
+These values are an example of application policy around the model. The validation-selected threshold remains `0.7990`.
 
 ---
 
-## 17. Limitations and Responsible Use
+## 19. Limitations and Responsible Use
 
 This is an AI research and deployment project, not a complete moderation policy.
 
 Known limitations include:
 
 - the production output is binary rather than multi-policy,
-- Jigsaw annotations can contain dataset bias,
+- the four source datasets use different annotation schemes and collection domains,
+- source-wise performance still varies, especially on HateXplain and TweetEval,
+- social-media language changes over time,
 - BERTweet has a relatively short sequence budget,
-- long comments may be truncated,
+- text longer than 128 tokens is truncated during model input,
 - sarcasm and implicit context remain difficult,
 - quoted abuse can be mistaken for direct abuse,
-- political and protest-related language may be close to the decision boundary,
 - reclaimed language can be misclassified,
-- one global threshold may not suit every application, and
-- the current model is primarily intended for English-language text.
+- one global threshold may not suit every application,
+- the current model is primarily intended for English-language text, and
+- the 15-case regression suite is a targeted engineering check rather than a substitute for a large independent production-domain test set.
 
 For high-impact moderation, use the classifier as one signal in a broader system. Borderline and context-dependent cases should be sent to a human reviewer.
 
 ---
 
-## 18. Summary
+## 20. Summary
 
-BERTweet Guard follows a **research-first, scale-second, deploy-third** workflow:
+BERTweet Guard follows a **research → scale → diagnose → redesign → deploy** workflow:
 
 ```text
 THOS experimentation
         ↓
-Compare BERT, BERTweet, full fine-tuning, LoRA, and loss variants
+Compare BERT, BERTweet, full fine-tuning, LoRA, loss variants, and schedulers
         ↓
-Select BERTweet + LoRA + Focal Loss + cosine scheduling
+Select BERTweet + LoRA as the core modeling direction
         ↓
-Scale to the Jigsaw Toxic Comment dataset
+Scale to Jigsaw Toxic Comment Classification
         ↓
-Refine preprocessing, weighting, warmup, and LoRA configuration
+Reach strong in-domain benchmark performance
         ↓
-Tune checkpoint selection with validation Macro F1
+Test production-style text and identify generalization / false-positive weaknesses
         ↓
-Tune the deployment threshold on validation predictions
+Combine Jigsaw + HateXplain + Davidson + TweetEval Offensive
         ↓
-Evaluate once on held-out test data
+Keep all training rows and balance exposure with weighted sampling
         ↓
-Merge and export the trained model
+Train with Cross-Entropy + cosine warmup
         ↓
-Deploy the artifact through FastAPI, Docker, and Cloud Run
+Select checkpoints and thresholds using source-balanced validation Macro F1
+        ↓
+Evaluate overall, per-source, and by normal-text length
+        ↓
+Merge LoRA and export a clean model artifact
+        ↓
+Verify BERTweet tokenizer consistency
+        ↓
+Run 15-case final-artifact regression suite
+        ↓
+Upload the reusable artifact to Hugging Face
+        ↓
+Serve through FastAPI, Docker, and Cloud Run
 ```
 
-The deployed application is useful evidence that the model can operate outside a notebook, but the main contribution of the project is the complete AI workflow: **comparative experimentation, efficient fine-tuning, class-imbalance handling, careful evaluation, threshold calibration, and reproducible model export**.
+The deployed application demonstrates that the model can operate outside a notebook, but the main contribution of the project is the complete AI workflow: **comparative experimentation, dataset redesign, efficient fine-tuning, source-aware balancing, careful evaluation, threshold calibration, deployment diagnostics, and reproducible model export**.
 
 ---
 
 ## Public Release Scope
 
-This repository contains the current Jigsaw/BERTweet training workflow, model documentation, exported-model integration, and inference API. The earlier university THOS implementation is intentionally excluded; only its high-level comparison and conclusions are published.
+This repository contains the current four-source BERTweet training workflow in `bertweet_moderation_model.ipynb`, model documentation, exported-model integration, and inference API.
+
+The earlier university THOS implementation is intentionally excluded; only its high-level comparison and conclusions are published to document how the project evolved into the current model.
 
 ## Author
 
