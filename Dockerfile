@@ -9,16 +9,13 @@ WORKDIR /app
 
 COPY requirements.txt .
 
-RUN pip install \
-    --no-cache-dir \
-    -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 
 # --------------------------------------------------
 # Model cache version
 #
-# Increment this when a new Hugging Face model
-# version is uploaded.
+# Increment when the Hugging Face artifact changes.
 # --------------------------------------------------
 
 ARG MODEL_VERSION=2
@@ -28,24 +25,7 @@ ARG MODEL_VERSION=2
 # Download one exact Hugging Face snapshot
 # --------------------------------------------------
 
-RUN python -c "\
-    from pathlib import Path; \
-    from huggingface_hub import HfApi, snapshot_download; \
-    repo_id='anutej9/bertweet-guard'; \
-    revision=HfApi().model_info(repo_id).sha; \
-    print('Downloading BERTweet Guard'); \
-    print('Revision:', revision); \
-    snapshot_download( \
-    repo_id=repo_id, \
-    revision=revision, \
-    local_dir='/opt/bertweet-guard-model' \
-    ); \
-    Path('/opt/bertweet-guard-model/REVISION').write_text( \
-    revision, \
-    encoding='utf-8' \
-    ); \
-    print('Model artifact downloaded successfully.') \
-    "
+RUN python -c "from pathlib import Path; from huggingface_hub import HfApi, snapshot_download; repo_id='anutej9/bertweet-guard'; revision=HfApi().model_info(repo_id).sha; print('Downloading BERTweet Guard model version ${MODEL_VERSION}'); print('Revision:', revision); snapshot_download(repo_id=repo_id, revision=revision, local_dir='/opt/bertweet-guard-model'); Path('/opt/bertweet-guard-model/REVISION').write_text(revision, encoding='utf-8'); print('Model artifact downloaded successfully.')"
 
 
 # --------------------------------------------------
@@ -55,7 +35,8 @@ RUN python -c "\
 COPY . .
 
 
-# Tell backend to use the baked artifact.
+# Backend loads model + tokenizer + threshold.json
+# from this exact baked snapshot.
 ENV MODEL_DIR=/opt/bertweet-guard-model
 
 
