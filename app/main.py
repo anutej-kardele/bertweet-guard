@@ -5,20 +5,41 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.model import ModerationClassifier
-from app.schemas import ModerationRequest, ModerationResponse, ClassScores
+from app.schemas import (
+    ModerationRequest,
+    ModerationResponse,
+    ClassScores,
+)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print(f"Loading {settings.model_id} into memory...")
-    app.state.classifier = ModerationClassifier()
-    print("Model loaded successfully.")
+    print(
+        f"Loading {settings.model_id} into memory..."
+    )
+
+    classifier = ModerationClassifier()
+
+    app.state.classifier = classifier
+
+    print(
+        "Model loaded successfully. "
+        f"revision={classifier.model_revision} "
+        f"threshold="
+        f"{classifier.decision_threshold:.4f}"
+    )
+
     yield
+
     app.state.classifier = None
+
     print("Model unloaded.")
 
 
-is_dev = settings.environment == "development"
+is_dev = (
+    settings.environment
+    == "development"
+)
 
 app = FastAPI(
     title="BERTweet-Guard API",
@@ -46,7 +67,8 @@ app.add_middleware(
 @app.get("/")
 async def root():
     return {
-        "message": "BERTweet-Guard API is running",
+        "message":
+            "BERTweet-Guard API is running",
         "docs_url": "/docs",
         "health_url": "/health",
     }
@@ -54,32 +76,72 @@ async def root():
 
 @app.get("/health")
 async def health_check():
+    classifier = (
+        app.state.classifier
+    )
+
     return {
         "status": "active",
-        "environment": settings.environment,
-        "model": settings.model_id,
-        "threshold": settings.decision_threshold,
+        "environment":
+            settings.environment,
+        "model":
+            classifier.model_id,
+        "model_revision":
+            classifier.model_revision,
+        "threshold":
+            classifier.decision_threshold,
     }
 
 
-@app.post("/api/v1/predict", response_model=ModerationResponse)
-async def predict(request: ModerationRequest):
-    classifier = app.state.classifier
+@app.post(
+    "/api/v1/predict",
+    response_model=ModerationResponse,
+)
+async def predict(
+    request: ModerationRequest,
+):
+    classifier = (
+        app.state.classifier
+    )
 
-    _, scores = classifier.predict(request.text)
+    _, scores = classifier.predict(
+        request.text
+    )
 
-    flagged_prob = scores.get("flagged", 0.0)
+    flagged_prob = scores.get(
+        "flagged",
+        0.0,
+    )
 
-    is_flagged = flagged_prob >= settings.decision_threshold
-    final_prediction = "flagged" if is_flagged else "normal"
-    margin = flagged_prob - settings.decision_threshold
+    # Threshold now comes from threshold.json.
+    threshold = (
+        classifier.decision_threshold
+    )
+
+    is_flagged = (
+        flagged_prob
+        >= threshold
+    )
+
+    final_prediction = (
+        "flagged"
+        if is_flagged
+        else "normal"
+    )
+
+    margin = (
+        flagged_prob
+        - threshold
+    )
 
     return ModerationResponse(
         prediction=final_prediction,
-        scores=ClassScores(**scores),
+        scores=ClassScores(
+            **scores
+        ),
         flagged=is_flagged,
         threshold_info={
-            "threshold": settings.decision_threshold,
+            "threshold": threshold,
             "margin": margin,
         },
     )
